@@ -55,14 +55,11 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Add EC2 to known hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts 2>/dev/null
-
       - name: Test SSH connection
         run: |
-          ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "echo '✅ SSH connection OK'"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 $EC2_USER@$EC2_HOST "echo '✅ SSH connection OK'"
 
       - name: Pre-deploy health check
         id: pre_health
