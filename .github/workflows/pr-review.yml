@@ -3,7 +3,7 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main]  # Only reviews PRs targeting main (dev → main)
+    branches: [main]
 
 permissions:
   contents: read
@@ -54,7 +54,7 @@ jobs:
                 max_tokens: 4000,
                 messages: [{
                   role: "user",
-                  content: ("You are a senior code reviewer for a computer vision / AI backend (Python, FastAPI). Review this PR from dev → prod carefully.\n\nChanged files:\n" + $files + "\n\nDiff:\n" + $diff + "\n\nProvide:\n1. **Summary** - What this PR does\n2. **Issues** - Bugs, security issues, performance problems (be specific with file + line)\n3. **CV/ML Concerns** - Model loading issues, memory leaks, GPU handling, inference bottlenecks\n4. **Suggestions** - Improvements\n5. **Verdict** - APPROVE / REQUEST_CHANGES / COMMENT\n\nBe concise but thorough. Focus on real production issues.")
+                  content: ("You are a senior code reviewer for a computer vision / AI backend (Python, FastAPI). Review this PR from dev to main carefully.\n\nChanged files:\n" + $files + "\n\nDiff:\n" + $diff + "\n\nProvide:\n1. **Summary** - What this PR does\n2. **Issues** - Bugs, security issues, performance problems (be specific with file + line)\n3. **CV/ML Concerns** - Model loading issues, memory leaks, GPU handling, inference bottlenecks\n4. **Suggestions** - Improvements\n5. **Verdict** - APPROVE / REQUEST_CHANGES / COMMENT\n\nBe concise but thorough. Focus on real production issues.")
                 }]
               }')" | jq -r '.content[0].text')
 
@@ -63,5 +63,5 @@ jobs:
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg body "## 🤖 Claude AI Review (dev → prod)\n\n$REVIEW" \
+            -d "$(jq -n --arg body "## 🤖 Claude AI Review (dev → main)\n\n$REVIEW" \
               '{body: $body, event: "COMMENT"}')"

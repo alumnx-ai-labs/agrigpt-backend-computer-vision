@@ -2,13 +2,13 @@ name: Deploy to EC2
 
 on:
   push:
-    branches: [main]  # Triggers when PR is merged into main
+    branches: [main]
   workflow_dispatch:
     inputs:
       force_deploy:
         description: 'Force deploy even if health check fails'
         required: false
-        default: false
+        default: 'false'
         type: boolean
 
 permissions:
@@ -101,7 +101,7 @@ jobs:
             echo "🚀 CV BACKEND DEPLOYMENT STARTED"
             echo "========================================="
 
-            # ----- Pull latest code from prod -----
+            # ----- Pull latest code -----
             if [ ! -d "$APP_DIR/.git" ]; then
               echo "📥 First deployment - cloning repo..."
               git clone -b main "$REPO_URL" "$APP_DIR"
@@ -109,9 +109,11 @@ jobs:
             else
               echo "📥 Pulling latest main changes..."
               cd "$APP_DIR"
-              git fetch origin main
-              git checkout main 2>/dev/null || git checkout -b main origin/main
-              git reset --hard origin/main
+              git pull origin main --ff-only || {
+                echo "⚠️ Fast-forward failed, doing hard reset..."
+                git fetch origin main
+                git reset --hard origin/main
+              }
               git clean -fd
             fi
 
@@ -160,15 +162,11 @@ jobs:
               echo "✅ pm2 restarted: $SERVICE"
             else
               echo "⚠️ Service '$SERVICE' not found in pm2."
-              pm2 list
-              if [ -f "ecosystem.config.js" ]; then
-                pm2 start ecosystem.config.js
-                echo "✅ Started via ecosystem.config.js"
-              elif [ -f "ecosystem.config.cjs" ]; then
-                pm2 start ecosystem.config.cjs
-                echo "✅ Started via ecosystem.config.cjs"
+              if [ -f "start.sh" ]; then
+                pm2 start start.sh --name "$SERVICE"
+                echo "✅ Started via start.sh"
               else
-                echo "❌ No pm2 config found and service not running"
+                echo "❌ No start.sh found and service not in pm2"
                 exit 1
               fi
             fi
