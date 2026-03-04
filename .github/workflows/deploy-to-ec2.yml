@@ -18,7 +18,6 @@ permissions:
 env:
   EC2_HOST: ${{ secrets.EC2_HOST }}
   EC2_USER: ${{ secrets.EC2_USER }}
-  SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
   APP_DIR: ${{ secrets.EC2_APP_DIR }}
   SERVICE_NAME: ${{ secrets.EC2_SERVICE_NAME }}
   HEALTH_CHECK_URL: ${{ secrets.HEALTH_CHECK_URL }}
@@ -52,22 +51,24 @@ jobs:
           echo "deploy_id=$DEPLOY_ID" >> $GITHUB_OUTPUT
 
       - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add EC2 to known hosts
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts 2>/dev/null
-          echo "🔑 Key file info:"
-          head -1 ~/.ssh/deploy_key
-          tail -1 ~/.ssh/deploy_key
-          wc -l ~/.ssh/deploy_key
-          ssh -vvv -i ~/.ssh/deploy_key -o ConnectTimeout=10 -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "echo '✅ SSH connection OK'" 2>&1 | tail -30
+
+      - name: Test SSH connection
+        run: |
+          ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "echo '✅ SSH connection OK'"
 
       - name: Pre-deploy health check
         id: pre_health
         continue-on-error: true
         run: |
-          STATUS=$(ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST \
+          STATUS=$(ssh $EC2_USER@$EC2_HOST \
             "curl -sf -o /dev/null -w '%{http_code}' $HEALTH_CHECK_URL 2>/dev/null || echo '000'")
           echo "pre_deploy_status=$STATUS" >> $GITHUB_OUTPUT
           echo "📊 Pre-deploy server status: $STATUS"
@@ -75,7 +76,7 @@ jobs:
       - name: Backup current version
         run: |
           echo "📦 Creating backup..."
-          ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST << 'BACKUP_SCRIPT'
+          ssh $EC2_USER@$EC2_HOST << 'BACKUP_SCRIPT'
             set -e
             APP_DIR="${{ env.APP_DIR }}"
             cd "$APP_DIR" 2>/dev/null || { echo "App dir not found, fresh deploy"; exit 0; }
@@ -94,7 +95,7 @@ jobs:
         id: deploy_step
         run: |
           echo "🚀 Deploying computer-vision backend to EC2..."
-          ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST << 'DEPLOY_SCRIPT'
+          ssh $EC2_USER@$EC2_HOST << 'DEPLOY_SCRIPT'
             set -e
 
             APP_DIR="${{ env.APP_DIR }}"
@@ -191,7 +192,7 @@ jobs:
           MAX_RETRIES=15
           RETRY=0
           while [ $RETRY -lt $MAX_RETRIES ]; do
-            STATUS=$(ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST \
+            STATUS=$(ssh $EC2_USER@$EC2_HOST \
               "curl -sf -o /dev/null -w '%{http_code}' $HEALTH_CHECK_URL 2>/dev/null || echo '000'")
 
             if [ "$STATUS" = "200" ]; then
@@ -209,7 +210,7 @@ jobs:
             echo "❌ Health check FAILED"
             echo "healthy=false" >> $GITHUB_OUTPUT
             echo "📋 pm2 logs (last 30 lines):"
-            ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST \
+            ssh $EC2_USER@$EC2_HOST \
               "pm2 logs ${{ env.SERVICE_NAME }} --lines 30 --nostream" 2>/dev/null || true
           fi
 
@@ -217,7 +218,7 @@ jobs:
         if: steps.health_check.outputs.healthy == 'false' && github.event.inputs.force_deploy != 'true'
         run: |
           echo "🔙 ROLLING BACK..."
-          ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST << 'ROLLBACK_SCRIPT'
+          ssh $EC2_USER@$EC2_HOST << 'ROLLBACK_SCRIPT'
             set -e
             APP_DIR="${{ env.APP_DIR }}"
             SERVICE="${{ env.SERVICE_NAME }}"
@@ -284,7 +285,3 @@ jobs:
           echo "| Code Pull | ${{ steps.deploy_step.outcome }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Health Check | ${{ steps.health_check.outputs.healthy }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-
-      - name: Cleanup
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
