@@ -1,0 +1,212 @@
+# =========================
+# Operating System Files
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# =========================
+# IDE & Editor Files
+# =========================
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+
+# Keep VSCode workspace settings if needed
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+
+# =========================
+# Node.js / JavaScript
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+.vuepress/dist/
+.serverless/
+
+# npm/yarn/pnpm
+.npm
+.yarn-integrity
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.envrc
+
+# Python distribution
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# =========================
+# Environment & Secrets
+# =========================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+*.env
+
+# Keep example env files
+!.env.example
+
+# Secrets & Certificates
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+.secrets/
+
+# =========================
+# Project-Specific
+# =========================
+
+# Drone video generated files
+*.SRT
+*.mp4
+*.MP4
+*.mov
+*.MOV
+captured_frames/
+frames_index.json
+
+# Data directories
+image-query/data/
+image-query/files/
+
+# Upload directories
+uploads/
+
+# Local video files
+*.local.mp4
+
+# Python bytecode in project
+image-query/__pycache__/
+image-query/app/__pycache__/
+image-query/app/*/__pycache__/
+image-query/app/*/*/__pycache__/
+
+# Test outputs
+.pytest_cache/
+htmlcov/
+.coverage
+.tox/
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# =========================
+# Logs & Temporary Files
+# =========================
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# =========================
+# Package Archives
+# =========================
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# =========================
+# Database Files
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Misc
+# =========================
+.eslintcache
+.stylelintcache
+.parcel-cache
+
+.env
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+node_modules/
+dist/
+build/
