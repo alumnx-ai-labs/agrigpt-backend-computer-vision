@@ -1,4 +1,8 @@
 #!/bin/bash
-cd /home/ubuntu/agrigpt/agrigpt-backend-computer-vision
-source venv/bin/activate
-uvicorn main:app --host 0.0.0.0 --port 8009
+cd "$(dirname "$0")"
+if [ -d "venv" ]; then
+    source venv/bin/activate
+elif [ -d ".venv" ]; then
+    source .venv/bin/activate
+fi
+uvicorn app.main:app --host 0.0.0.0 --port 8009
