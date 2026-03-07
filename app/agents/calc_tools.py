@@ -26,7 +26,7 @@ from app.config import (
 def calculate_gsd(
     altitude_m: float,
     image_width_px: int = IMAGE_WIDTH_PX,
-    focal_len_35mm: float = FOCAL_LEN_35MM,
+    focal_len_35mm: float = None,  # Now optional - prefer from SRT telemetry
     crop_factor: float = CROP_FACTOR,
     sensor_width_mm: float = SENSOR_WIDTH_MM,
 ) -> float:
@@ -38,13 +38,17 @@ def calculate_gsd(
     Args:
         altitude_m: Altitude in metres
         image_width_px: Image width in pixels
-        focal_len_35mm: 35mm-equivalent focal length (mm)
+        focal_len_35mm: 35mm-equivalent focal length (mm) - prefer from SRT telemetry
         crop_factor: Sensor crop factor
         sensor_width_mm: Physical sensor width (mm)
     
     Returns:
         GSD in metres per pixel
     """
+    # Use provided focal_len or fallback to config default
+    if focal_len_35mm is None:
+        focal_len_35mm = FOCAL_LEN_35MM
+    
     actual_fl_mm = focal_len_35mm / crop_factor
     altitude_mm = altitude_m * 1000
     return (altitude_mm * sensor_width_mm) / (actual_fl_mm * image_width_px) / 1000
@@ -112,7 +116,7 @@ def calculate_area_pure(
 
     Args:
         points: List of [x, y] pixel coordinates (user order, n >= 3)
-        telemetry: Dict with keys rel_alt_m/altitude_m, lat, lon
+        telemetry: Dict with keys rel_alt_m/altitude_m, lat, lon, focal_len
 
     Returns:
         Dict with area in multiple units, GSD, and method info
@@ -121,7 +125,10 @@ def calculate_area_pure(
     if not altitude:
         return {"error": "Altitude missing from telemetry — ensure SRT is ingested into DB"}
 
-    gsd = calculate_gsd(altitude)
+    # Get focal_len from telemetry (dynamic from SRT) or use default
+    focal_len = telemetry.get("focal_len")
+    
+    gsd = calculate_gsd(altitude, focal_len_35mm=focal_len)
     clat = telemetry.get("lat")
     clon = telemetry.get("lon")
     has_gps = clat and clon and not (clat == 0.0 and clon == 0.0)
@@ -139,13 +146,17 @@ def calculate_area_pure(
         gps_pts = None
         method = "GSD_Shoelace"
 
+    # All areas rounded to 2 decimals for natural language responses
     return {
-        "area_m2": round(area_m2, 4),
+        "area_m2": round(area_m2, 2),
         "area_sqft": round(area_m2 * 10.7639, 2),
         "area_sq_yards": round(area_m2 * 1.19599, 2),
-        "area_cents": round(area_m2 / 40.4686, 6),
-        "area_acres": round(area_m2 / 4046.86, 6),
-        "gsd_cm_px": round(gsd * 100, 4),
+        "area_cents": round(area_m2 / 40.4686, 2),
+        "area_acres": round(area_m2 / 4046.86, 2),
+        "area_hectares": round(area_m2 / 10000, 2),
+        "gsd_cm_px": round(gsd * 100, 2),
+        "focal_len_mm": focal_len if focal_len else FOCAL_LEN_35MM,
+        "altitude_m": altitude,
         "method": method,
         "gps_markers": [[lat, lon] for lat, lon in gps_pts] if gps_pts else None,
         "llm_used": False,

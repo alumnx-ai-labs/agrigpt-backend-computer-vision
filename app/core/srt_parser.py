@@ -96,6 +96,24 @@ def extract_altitude(text: str) -> float:
     return 0.0
 
 
+def extract_focal_len(text: str) -> float:
+    """
+    Extract focal length in mm from SRT block.
+    
+    Handles two formats:
+      [focal_len: 24.00]  → returns 24.0
+      [focal_len : 240]   → returns 24.0 (value > 100 means 0.1mm units)
+    
+    Falls back to 24.0mm (common DJI wide angle).
+    """
+    m = re.search(r"\[focal_len\s*:\s*([\d.]+)\]", text)
+    if m:
+        val = float(m.group(1))
+        # If value > 100, it's in 0.1mm units (240 = 24.0mm)
+        return round(val / 10.0, 2) if val > 100 else round(val, 2)
+    return 24.0  # fallback for DJI drones
+
+
 def parse_srt_block(block_text: str, frame_number: int) -> Optional[Dict[str, Any]]:
     """Parse a single SRT subtitle block into a telemetry dict."""
     lines = block_text.strip().splitlines()
@@ -116,6 +134,7 @@ def parse_srt_block(block_text: str, frame_number: int) -> Optional[Dict[str, An
         "latitude": extract_float(r"\[latitude:\s*([-\d.]+)\]", full_text),
         "longitude": extract_float(r"\[longitude:\s*([-\d.]+)\]", full_text),
         "altitude": extract_altitude(full_text),
+        "focal_len": extract_focal_len(full_text),  # Dynamic focal length from SRT
     }
 
 
@@ -183,6 +202,7 @@ def store_srt_to_db(
             latitude=r["latitude"],
             longitude=r["longitude"],
             altitude=r["altitude"],
+            focal_len=r.get("focal_len", 24.0),  # Dynamic focal length from SRT
         )
         for r in records
     ]

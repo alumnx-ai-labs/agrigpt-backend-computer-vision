@@ -83,6 +83,12 @@ S3_FRAMES_PREFIX = os.environ.get("S3_FRAMES_PREFIX", "computer-vision/snapshots
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # =============================================================================
+# SPEECH SERVICE
+# =============================================================================
+
+SPEECH_SERVICE_URL = os.environ.get("SPEECH_SERVICE_URL", "https://newapi.alumnx.com/agrigpt/speech")
+
+# =============================================================================
 # APP METADATA
 # =============================================================================
 

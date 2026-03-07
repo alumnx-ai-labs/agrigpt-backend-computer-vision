@@ -73,6 +73,7 @@ class DroneFrame(Base):
         latitude: GPS latitude coordinate
         longitude: GPS longitude coordinate
         altitude: Relative altitude in metres
+        focal_len: Focal length in mm (35mm equivalent) from SRT - used for GSD calculation
     """
     __tablename__ = "drone_frames"
     __table_args__ = (
@@ -87,6 +88,7 @@ class DroneFrame(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     altitude = Column(Float, nullable=False)  # metres (rel_alt)
+    focal_len = Column(Float, nullable=True, default=24.0)  # mm (35mm equiv) - dynamic from SRT
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
