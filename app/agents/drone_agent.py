@@ -452,9 +452,19 @@ def answer_query_from_db(
         "పశువుల ఎరువు", "కంపోస్ట్",
         "गोबर", "जैविक",
     ])
+    is_phenology = any(kw in q for kw in [
+        "flower", "flowering", "bloom", "fruit", "fruiting", "harvest", "mature",
+        "పూత", "పండు", "పుష్పం",
+        "फूल", "फल", "पकना",
+    ])
+    is_physical = any(kw in q for kw in [
+        "height", "age", "tall", "old", "young", "size of tree",
+        "ఎత్తు", "వయసు",
+        "ऊंचाई", "उम्र",
+    ])
 
     # General query — show everything
-    general = not any([is_area, is_count, is_health, is_fertilizer, is_manure])
+    general = not any([is_area, is_count, is_health, is_fertilizer, is_manure, is_phenology, is_physical])
     if general:
         is_area = len(points) >= 3
         is_count = True
@@ -603,13 +613,20 @@ def answer_query_from_db(
             f"DAP {f_['dap_kg']} kg, Potash {f_['potash_kg']} kg, Manure {f_['manure_kg']} kg."
         )
 
-    if any(kw in q for kw in ["flower", "fruit", "bloom", "harvest"]):
+    if is_phenology and "phenology" in result["data"]:
         ph = result["data"]["phenology"]
         parts.append(
             f"Flowering: {ph['flowering']['High']} high, {ph['flowering']['Medium']} medium, "
             f"{ph['flowering']['Low']} low. "
             f"Fruiting: {ph['fruiting']['Mature']} mature, {ph['fruiting']['Developing']} developing, "
             f"{ph['fruiting']['None']} none."
+        )
+
+    if is_physical and "physical" in result["data"]:
+        ph = result["data"]["physical"]
+        parts.append(
+            f"Tree height: avg {ph['avg_height_m']}m (min {ph['min_height_m']}m, max {ph['max_height_m']}m). "
+            f"Age: avg {ph['avg_age_years']} yrs (min {ph['min_age_years']}, max {ph['max_age_years']})."
         )
 
     if not parts:
