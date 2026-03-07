@@ -153,34 +153,8 @@ class FrameAnalysis(Base):
 class Plant(Base):
     __tablename__ = "plants"
 
-    plant_id   = Column(Integer, primary_key=True, autoincrement=True)
-    latitude   = Column(Float, nullable=False, index=True)
-    longitude  = Column(Float, nullable=False, index=True)
-    plant_type = Column(String(50), nullable=False, default="mango")
-
-    # Canopy
-    canopy_size     = Column(String(20), nullable=False)   # Small / Medium / Large
-    canopy_radius_m = Column(Float, nullable=True)
-
-    # Health & phenology
-    health_status     = Column(String(20), nullable=False)  # Healthy / Moderate / Stressed
-    health_score      = Column(Integer, nullable=True)      # 0–100
-    flowering_degree  = Column(String(20), nullable=False)  # Low / Medium / High
-    fruiting_status   = Column(String(20), nullable=False)  # None / Developing / Mature
-
-    # Physical estimates
-    height_estimate_m = Column(Float, nullable=True)
-    age_years         = Column(Integer, nullable=True)
-
-    # Input recommendations (per plant)
-    urea_needed_kg   = Column(Float, nullable=True)
-    dap_needed_kg    = Column(Float, nullable=True)
-    potash_needed_kg = Column(Float, nullable=True)
-    manure_needed_kg = Column(Float, nullable=True)
-
-    # Stress
-    stress_level      = Column(String(20), nullable=True)   # None / Low / Medium / High
-    stress_indicators = Column(JSON, nullable=True)         # ["yellowing", "sparse canopy"]
-
-    created_at   = Column(DateTime(timezone=True), server_default=func.now())
-    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    plant_id         = Column(Integer, primary_key=True, autoincrement=True)
+    latitude         = Column(Float, nullable=False, index=True)
+    longitude        = Column(Float, nullable=False, index=True)
+    canopy_size      = Column(String(20), nullable=False)   # Small / Medium / Large
+    flowering_degree = Column(String(20), nullable=False)   # Low / Medium / High

@@ -55,75 +55,15 @@ def build_db_url() -> str:
 
 
 def make_plant(lat: float, lon: float) -> Plant:
-    # Canopy
-    canopy_size = random.choices(
-        ["Small", "Medium", "Large"], weights=[20, 50, 30]
-    )[0]
-    radius_map = {"Small": 2.5, "Medium": 4.0, "Large": 6.0}
-    canopy_radius_m = round(radius_map[canopy_size] + random.uniform(-0.5, 0.5), 2)
-
-    # Health
-    health_status = random.choices(
-        ["Healthy", "Moderate", "Stressed"], weights=[65, 25, 10]
-    )[0]
-    if health_status == "Healthy":
-        health_score = random.randint(75, 100)
-        stress_level = "None"
-    elif health_status == "Moderate":
-        health_score = random.randint(45, 74)
-        stress_level = "Low"
-    else:
-        health_score = random.randint(20, 44)
-        stress_level = random.choices(["Medium", "High"], weights=[60, 40])[0]
-
-    # Stress indicators (only for stressed/moderate plants)
-    all_indicators = [
-        "yellowing leaves", "sparse canopy", "fungal spots", "nutrient deficiency"
-    ]
-    if health_status == "Stressed":
-        stress_indicators = random.sample(all_indicators, k=random.randint(1, 3))
-    elif health_status == "Moderate":
-        stress_indicators = random.sample(all_indicators, k=random.randint(0, 1))
-    else:
-        stress_indicators = []
-
-    # Phenology
-    flowering_degree = random.choices(
-        ["Low", "Medium", "High"], weights=[25, 40, 35]
-    )[0]
-    fruiting_status = random.choices(
-        ["None", "Developing", "Mature"], weights=[25, 45, 30]
-    )[0]
-
-    # Physical
-    height_m = round(random.uniform(4.0, 10.0), 1)
-    age_years = random.randint(5, 25)
-
-    # Fertilizer (larger canopy → more input)
-    canopy_factor = {"Small": 0.7, "Medium": 1.0, "Large": 1.4}[canopy_size]
-    urea     = round(random.uniform(0.5, 2.0) * canopy_factor, 2)
-    dap      = round(random.uniform(0.3, 1.2) * canopy_factor, 2)
-    potash   = round(random.uniform(0.4, 1.5) * canopy_factor, 2)
-    manure   = round(random.uniform(10.0, 30.0) * canopy_factor, 1)
-
     return Plant(
         latitude=round(lat, 7),
         longitude=round(lon, 7),
-        plant_type="mango",
-        canopy_size=canopy_size,
-        canopy_radius_m=canopy_radius_m,
-        health_status=health_status,
-        health_score=health_score,
-        flowering_degree=flowering_degree,
-        fruiting_status=fruiting_status,
-        height_estimate_m=height_m,
-        age_years=age_years,
-        urea_needed_kg=urea,
-        dap_needed_kg=dap,
-        potash_needed_kg=potash,
-        manure_needed_kg=manure,
-        stress_level=stress_level,
-        stress_indicators=stress_indicators if stress_indicators else None,
+        canopy_size=random.choices(
+            ["Small", "Medium", "Large"], weights=[20, 50, 30]
+        )[0],
+        flowering_degree=random.choices(
+            ["Low", "Medium", "High"], weights=[25, 40, 35]
+        )[0],
     )
 
 

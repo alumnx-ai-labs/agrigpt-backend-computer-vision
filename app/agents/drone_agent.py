@@ -111,9 +111,7 @@ def answer_query_pure(
             result["tools_used"].append("calculate_area")
             result["data"]["area"] = area_result
             result["answer"] += (
-                f"The area of the selected region is {area_result['area_sq_yards']:,.2f} square yards "
-                f"({area_result['area_acres']:.4f} acres or {area_result['area_sqft']:.2f} sq ft). "
-                f"This was calculated using GPS-geodesic computation at an altitude of {area_result.get('alt_m', 'N/A')} meters.\n\n"
+                f"The selected area is {area_result['area_acres']:.2f} acres.\n\n"
             )
         else:
             result["answer"] += "I need at least 3 points to calculate the area. Please click on the image to mark the boundary points of the region you want to measure.\n\n"
@@ -243,7 +241,7 @@ def answer_query_pure(
             f"Plants: I detected {plant_result['count']} plants with {plant_result['green_coverage_pct']}% green coverage.\n"
         )
         if "area" in result["data"]:
-            result["answer"] += f"Area: The region spans {result['data']['area']['area_sq_yards']:,.2f} sq yards ({result['data']['area']['area_acres']:.4f} acres).\n"
+            result["answer"] += f"Area: {result['data']['area']['area_acres']:.2f} acres.\n"
         result["answer"] += (
             f"Health: The crop health status is {health_result['status']} with a score of {health_result['health_score']}/100.\n\n"
             f"Tip: You can ask specific questions like 'how many plants', 'fertilizer needed', or 'crop health' for more detailed analysis."
@@ -286,38 +284,39 @@ def format_response_with_gemini(
     try:
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
-            temperature=0.3,
+            temperature=0.0,
             google_api_key=GEMINI_API_KEY,
         )
-        
-        system_prompt = """You are an expert agricultural drone analyst. Your job is to convert raw analysis data into clear, helpful, conversational responses.
 
-RESPONSE RULES:
-1. Write in PLAIN TEXT only - NO markdown formatting (no **, *, #, backticks, code blocks)
-2. Be conversational and helpful, like a knowledgeable farm advisor
-3. All numeric values should be rounded to 2 decimal places
-4. Use clear structure with:
-   - Brief direct answer first (2-3 sentences)
-   - Key details in simple bullet points using dashes (-)
-   - Practical recommendations when applicable
-5. Keep responses concise but informative (100-200 words)
-6. Mention the tool/analysis method used
-7. If area is mentioned, include both square yards and acres for farmer convenience
+        system_prompt = """You are a farm data terminal. Output ONLY the raw facts from the data provided.
 
-DATA FORMAT:
-- Area: always show sq_yards and acres
-- Fertilizer: show kg values
-- Plant count: show count and coverage %
-- Health: show score and status
+ABSOLUTE RULES — violating any of these is wrong:
+1. NO greetings, NO encouragement, NO filler ("It's great", "Continue monitoring", "excellent condition", "Based on our tool")
+2. NO markdown — no **, no ##, no -, no bullet points, no backticks
+3. NO recommendations or tips unless the question explicitly asks for advice
+4. NO restating the question
+5. Answer ONLY what was asked — if asked about count, give count only; if asked about yield, give yield only
+6. Maximum 3 sentences for any single-topic question
+7. For combined questions (e.g. "count and area"), answer each in one sentence, in the order asked
+8. Numbers: round to 1 decimal place, use commas for thousands
 
-Remember: You're helping a farmer understand their drone analysis results. Be clear, practical, and friendly."""
+OUTPUT FORMAT by topic:
+- Count: "X mango trees — L large, M medium, S small."
+- Area: "X sq yards (Y acres)."
+- Health: "X healthy, Y moderate, Z stressed. Avg score: W/100."
+- Fertilizer: "Urea X kg, DAP Y kg, Potash Z kg, Manure W kg."
+- Yield: "Expected X–Y kg this season (avg Z kg per tree)."
+- Flowering: "X high, Y medium, Z low flowering."
+- Fruiting: "X mature, Y developing, Z not fruiting."
+
+Read the data. Report the numbers. Nothing else."""
 
         # Build a summary of the analysis results
         data_summary = []
         
         if "area" in tool_data:
             area = tool_data["area"]
-            data_summary.append(f"AREA: {area.get('area_sq_yards', 0):.2f} sq yards ({area.get('area_acres', 0):.2f} acres)")
+            data_summary.append(f"AREA: {area.get('area_acres', 0):.2f} acres")
             if "method" in area:
                 data_summary.append(f"Method: {area['method']}")
             if "focal_len_mm" in area:
@@ -372,18 +371,20 @@ Remember: You're helping a farmer understand their drone analysis results. Be cl
             data_summary.append(
                 f"AGE: avg {ph.get('avg_age_years','N/A')} yrs (min {ph.get('min_age_years','N/A')}, max {ph.get('max_age_years','N/A')})"
             )
-        
-        user_message = f"""User's Question: {question}
 
-Tools Used: {', '.join(tools_used)}
+        if "yield" in tool_data:
+            y = tool_data["yield"]
+            data_summary.append(
+                f"YIELD: {y.get('min_kg',0)}–{y.get('max_kg',0)} kg total, "
+                f"avg {y.get('per_tree_avg_kg',0)} kg/tree"
+            )
 
-Analysis Results:
-{chr(10).join('- ' + d for d in data_summary)}
+        user_message = f"""Question: {question}
 
-Full Data:
-{json.dumps(tool_data, indent=2, default=str)}
+Data:
+{chr(10).join(data_summary)}
 
-Please provide a clear, helpful response to the user's question based on this analysis data."""
+Answer the question using only the numbers above. Follow the output format rules exactly."""
 
         response = llm.invoke([
             SystemMessage(content=system_prompt),
@@ -415,229 +416,358 @@ def answer_query_from_db(
     telemetry: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Answer agricultural queries using per-plant PostgreSQL data.
-
-    Question-aware: only computes and returns sections relevant to what
-    was asked. Supports English, Telugu, and Hindi keywords so the
-    plain-text fallback is also focused when Gemini is unavailable.
+    Fallback plain-text answer from DB (used only when Gemini is unavailable).
+    Fields available: canopy_size, flowering_degree.
+    Health is inferred from flowering_degree.
     """
     from app.agents.calc_tools import calculate_area_pure
 
     q = question.lower()
-
-    # ── Multilingual keyword matching (en / te / hi) ──────────────────────────
-    is_area = any(kw in q for kw in [
-        "area", "square", "sqft", "acre", "cent", "how big", "how much land",
-        "ఏరియా", "విస్తీర్ణం", "ఎంత స్థలం", "ఎంత ఏరియా",
-        "क्षेत्र", "कितनी जमीन", "क्षेत्रफल",
-    ])
-    is_count = any(kw in q for kw in [
-        "how many", "count", "plant", "tree", "mango", "number of",
-        "small", "medium", "large", "canopy", "size", "breakdown", "type",
-        "ఎన్ని", "మొక్క", "చెట్టు", "మొక్కలు", "ఎంత మొక్కలు",
-        "कितने", "पौधे", "पेड़",
-    ])
-    is_health = any(kw in q for kw in [
-        "health", "condition", "status", "healthy", "sick", "stress", "disease",
-        "ఆరోగ్యం", "స్థితి", "ఆరోగ్య స్థితి",
-        "स्वास्थ्य", "स्थिति", "बीमार",
-    ])
-    is_fertilizer = any(kw in q for kw in [
-        "fertilizer", "urea", "dap", "npk", "nutrient",
-        "ఎరువు", "యూరియా", "ఎరువులు",
-        "खाद", "उर्वरक", "यूरिया",
-    ])
-    is_manure = any(kw in q for kw in [
-        "manure", "compost", "organic",
-        "పశువుల ఎరువు", "కంపోస్ట్",
-        "गोबर", "जैविक",
-    ])
-    is_phenology = any(kw in q for kw in [
-        "flower", "flowering", "bloom", "fruit", "fruiting", "harvest", "mature",
-        "పూత", "పండు", "పుష్పం",
-        "फूल", "फल", "पकना",
-    ])
-    is_physical = any(kw in q for kw in [
-        "height", "age", "tall", "old", "young", "size of tree",
-        "ఎత్తు", "వయసు",
-        "ऊंचाई", "उम्र",
-    ])
-
-    # General query — show everything
-    general = not any([is_area, is_count, is_health, is_fertilizer, is_manure, is_phenology, is_physical])
-    if general:
-        is_area = len(points) >= 3
-        is_count = True
-        is_health = True
-
-    result = {
-        "question": question,
-        "answer": "",
-        "tools_used": ["query_plants_db"],
-        "llm_used": False,
-        "data": {},
-    }
-
     count = len(plants)
+
+    is_area      = any(kw in q for kw in ["area","square","sqft","acre","cent","how big","how much land","ఏరియా","क्षेत्र"])
+    is_count     = any(kw in q for kw in ["how many","count","plant","tree","mango","number","canopy","ఎన్ని","మొక్క","कितने","पौधे"])
+    is_flowering = any(kw in q for kw in ["flower","flowering","bloom","fruit","fruiting","harvest","పూత","फूल","फल"])
+    is_health    = any(kw in q for kw in ["health","condition","healthy","sick","stress","disease","ఆరోగ్యం","स्वास्थ्य"])
+    is_fertilizer= any(kw in q for kw in ["fertilizer","urea","dap","npk","nutrient","manure","compost","organic","ఎరువు","खाद","गोबर"])
+    is_yield     = any(kw in q for kw in ["yield","produce","harvest","output","production","income","దిగుబడి","उपज","पैदावार"])
+
+    if not any([is_area, is_count, is_flowering, is_health, is_fertilizer, is_yield]):
+        is_count = is_flowering = True
+        is_area = len(points) >= 3
+
+    # Canopy aggregation
+    large_n  = sum(1 for p in plants if p.canopy_size == "Large")
+    medium_n = sum(1 for p in plants if p.canopy_size == "Medium")
+    small_n  = sum(1 for p in plants if p.canopy_size == "Small")
+
+    # Flowering aggregation
+    fl_high = sum(1 for p in plants if p.flowering_degree == "High")
+    fl_med  = sum(1 for p in plants if p.flowering_degree == "Medium")
+    fl_low  = sum(1 for p in plants if p.flowering_degree == "Low")
+
+    # Health inferred from flowering
+    healthy_n  = fl_high
+    moderate_n = fl_med
+    stressed_n = fl_low
+
+    # Fertilizer: canopy-weighted benchmarks (urea, dap, potash, manure kg/tree)
+    FERT = {"Large": (2.2, 0.9, 1.3, 32), "Medium": (1.8, 0.7, 1.0, 25), "Small": (1.2, 0.5, 0.7, 18)}
+    urea   = round(sum(FERT[p.canopy_size][0] for p in plants), 1)
+    dap    = round(sum(FERT[p.canopy_size][1] for p in plants), 1)
+    potash = round(sum(FERT[p.canopy_size][2] for p in plants), 1)
+    manure = round(sum(FERT[p.canopy_size][3] for p in plants), 1)
+
+    yield_data = calculate_yield_from_plants(plants)
+
     area_data = {}
-
-    # ── Always compute ALL aggregations so Gemini has full context ────────────
-
-    # Area
     if len(points) >= 3:
         area_data = calculate_area_pure(points, telemetry)
-        result["data"]["area"] = area_data
 
-    # Plant count + canopy breakdown
-    small_n  = sum(1 for p in plants if p.canopy_size == "Small")
-    medium_n = sum(1 for p in plants if p.canopy_size == "Medium")
-    large_n  = sum(1 for p in plants if p.canopy_size == "Large")
-    result["data"]["plant_count"] = {
-        "count": count,
-        "canopy_breakdown": {"Small": small_n, "Medium": medium_n, "Large": large_n},
-        "green_coverage_pct": round(
-            sum(1 for p in plants if p.health_status == "Healthy") / max(count, 1) * 100, 1
-        ),
+    parts = []
+    if is_area and area_data:
+        parts.append(f"Area: {area_data['area_acres']:.2f} acres.")
+    if is_count:
+        parts.append(f"{count} mango trees — {large_n} large, {medium_n} medium, {small_n} small canopy.")
+    if is_flowering:
+        parts.append(f"Flowering: {fl_high} high, {fl_med} medium, {fl_low} low.")
+    if is_health:
+        parts.append(f"Health (from flowering): {healthy_n} productive, {moderate_n} moderate, {stressed_n} low activity.")
+    if is_fertilizer:
+        parts.append(f"For {count} trees: Urea {urea} kg, DAP {dap} kg, Potash {potash} kg, Manure {manure} kg.")
+    if is_yield:
+        parts.append(f"Expected yield: {yield_data['min_kg']}–{yield_data['max_kg']} kg (avg {yield_data['per_tree_avg_kg']} kg/tree).")
+
+    return {
+        "question": question,
+        "answer": " ".join(parts) or f"{count} mango trees — {large_n} large, {medium_n} medium, {small_n} small.",
+        "tools_used": ["query_plants_db"],
+        "llm_used": False,
+        "data": {"area": area_data, "plant_count": {"count": count}},
     }
 
-    # Health aggregation
-    if count > 0:
-        avg_score  = round(sum(p.health_score or 0 for p in plants) / count)
-        healthy_n  = sum(1 for p in plants if p.health_status == "Healthy")
-        moderate_n = sum(1 for p in plants if p.health_status == "Moderate")
-        stressed_n = sum(1 for p in plants if p.health_status == "Stressed")
-        dominant   = max(
-            [("Healthy", healthy_n), ("Moderate", moderate_n), ("Stressed", stressed_n)],
-            key=lambda x: x[1]
-        )[0]
-        # Collect all unique stress indicators
-        all_stress = []
-        for p in plants:
-            if p.stress_indicators:
-                all_stress.extend(p.stress_indicators)
-        stress_summary = {s: all_stress.count(s) for s in set(all_stress)}
 
-        result["data"]["health"] = {
-            "health_score": avg_score,
-            "status": dominant,
-            "metrics": {
-                "Healthy": healthy_n,
-                "Moderate": moderate_n,
-                "Stressed": stressed_n,
-                "stress_level_none":   sum(1 for p in plants if p.stress_level == "None"),
-                "stress_level_low":    sum(1 for p in plants if p.stress_level == "Low"),
-                "stress_level_medium": sum(1 for p in plants if p.stress_level == "Medium"),
-                "stress_level_high":   sum(1 for p in plants if p.stress_level == "High"),
-                "stress_indicators": stress_summary,
-                "green_coverage_pct": round(healthy_n / max(count, 1) * 100, 1),
-                "stress_indicators_pct": round(stressed_n / max(count, 1) * 100, 1),
+# =============================================================================
+# IMAGE CROP + GEMINI VISION PLANT COUNT
+# =============================================================================
+
+def crop_image_to_polygon(image_b64: str, points: List[List[float]]) -> Optional[str]:
+    """
+    Crop the drone image to the bounding box of the polygon and darken
+    everything outside the polygon so Gemini only sees the selected region.
+    Returns a base64-encoded JPEG of the cropped region, or None on failure.
+    """
+    try:
+        import base64
+        import numpy as np
+        import cv2
+
+        img_bytes = base64.b64decode(image_b64)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+
+        pts = np.array([[int(x), int(y)] for x, y in points], dtype=np.int32)
+        x, y, w, h = cv2.boundingRect(pts)
+        pad = 30
+        x1 = max(0, x - pad)
+        y1 = max(0, y - pad)
+        x2 = min(img.shape[1], x + w + pad)
+        y2 = min(img.shape[0], y + h + pad)
+
+        cropped = img[y1:y2, x1:x2].copy()
+
+        # Shift polygon to cropped coordinate space
+        pts_shifted = pts - np.array([x1, y1])
+
+        # Darken everything outside the polygon so Gemini focuses on selected area
+        mask = np.zeros(cropped.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(mask, [pts_shifted], 255)
+        dark = (cropped * 0.25).astype(np.uint8)
+        result = np.where(mask[:, :, np.newaxis] == 255, cropped, dark)
+
+        # Draw the polygon boundary
+        cv2.polylines(result, [pts_shifted], isClosed=True,
+                      color=(0, 255, 128), thickness=2)
+
+        _, buffer = cv2.imencode('.jpg', result, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        return base64.b64encode(buffer).decode('utf-8')
+    except Exception as e:
+        print(f"[crop_image] Failed: {e}")
+        return None
+
+
+def count_plants_with_vision(image_b64: str, points: List[List[float]]) -> Optional[int]:
+    """
+    Crop the drone image to the selected polygon and use Gemini vision to count
+    tree canopies precisely within that region.
+    Returns integer count, or None if unavailable.
+    """
+    if not GEMINI_AVAILABLE or not GEMINI_API_KEY or not image_b64:
+        return None
+    try:
+        # Use cropped image so Gemini only sees the selected region
+        cropped_b64 = crop_image_to_polygon(image_b64, points)
+        img_b64 = cropped_b64 if cropped_b64 else image_b64
+
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            temperature=0.0,
+            google_api_key=GEMINI_API_KEY,
+        )
+        message = HumanMessage(content=[
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
             },
-            "recommendation": (
-                "Plants are mostly healthy. Routine monitoring recommended."
-                if dominant == "Healthy"
-                else "Several plants show stress. Check irrigation and soil nutrients."
-                if dominant == "Moderate"
-                else "High stress detected. Immediate inspection recommended."
-            ),
-        }
+            {
+                "type": "text",
+                "text": (
+                    "Aerial drone image of a mango farm. "
+                    "The bright region (inside the green polygon border) is the selected area.\n\n"
+                    "Task: Count every distinct tree canopy visible in the BRIGHT selected area only. "
+                    "Each separate round/oval green canopy cluster = 1 tree. "
+                    "Do not count the darkened outside area.\n\n"
+                    "Reply with a SINGLE INTEGER ONLY. No words, no explanation."
+                ),
+            }
+        ])
+        response = llm.invoke([message])
+        match = re.search(r'\d+', response.content.strip())
+        if match:
+            count = int(match.group())
+            print(f"[vision_count] Gemini vision counted {count} plants (cropped polygon)")
+            return count
+        return None
+    except Exception as e:
+        print(f"[vision_count] Failed: {e}")
+        return None
 
-        # Fertilizer / manure aggregation
-        result["data"]["fertilizer"] = {
-            "fertilizers": {
-                "urea_kg":   round(sum(p.urea_needed_kg   or 0 for p in plants), 2),
-                "dap_kg":    round(sum(p.dap_needed_kg    or 0 for p in plants), 2),
-                "potash_kg": round(sum(p.potash_needed_kg or 0 for p in plants), 2),
-                "manure_kg": round(sum(p.manure_needed_kg or 0 for p in plants), 2),
-            },
-            "plant_count": count,
-            "note": f"Summed per-plant recommendations for {count} mango trees",
-        }
 
-        # Phenology (flowering + fruiting)
-        result["data"]["phenology"] = {
-            "flowering": {
-                "Low":    sum(1 for p in plants if p.flowering_degree == "Low"),
-                "Medium": sum(1 for p in plants if p.flowering_degree == "Medium"),
-                "High":   sum(1 for p in plants if p.flowering_degree == "High"),
-            },
-            "fruiting": {
-                "None":       sum(1 for p in plants if p.fruiting_status == "None"),
-                "Developing": sum(1 for p in plants if p.fruiting_status == "Developing"),
-                "Mature":     sum(1 for p in plants if p.fruiting_status == "Mature"),
-            },
-        }
+# =============================================================================
+# YIELD ESTIMATION FROM PER-PLANT DB DATA
+# =============================================================================
 
-        # Physical stats (height + age)
-        heights = [p.height_estimate_m for p in plants if p.height_estimate_m]
-        ages    = [p.age_years for p in plants if p.age_years]
-        result["data"]["physical"] = {
-            "avg_height_m": round(sum(heights) / len(heights), 1) if heights else None,
-            "min_height_m": round(min(heights), 1) if heights else None,
-            "max_height_m": round(max(heights), 1) if heights else None,
-            "avg_age_years": round(sum(ages) / len(ages), 1) if ages else None,
-            "min_age_years": min(ages) if ages else None,
-            "max_age_years": max(ages) if ages else None,
-        }
+def calculate_yield_from_plants(plants: list) -> Dict[str, Any]:
+    """
+    Estimate mango yield from flowering_degree.
+    High flowering → strong fruiting season → 60-110 kg/tree
+    Medium flowering → moderate season    → 30-65  kg/tree
+    Low  flowering → limited season       → 10-35  kg/tree
+    """
+    if not plants:
+        return {"min_kg": 0, "max_kg": 0, "per_tree_avg_kg": 0}
 
-    # ── Plain-text fallback (used only if Gemini is unavailable) ─────────────
-    # Build answer by concatenating all relevant topics (supports combined queries)
-    parts = []
-    cb = result["data"]["plant_count"]["canopy_breakdown"]
+    YIELD_RANGE = {"High": (60, 110), "Medium": (30, 65), "Low": (10, 35)}
+    total_min = sum(YIELD_RANGE.get(p.flowering_degree or "Medium", (30, 65))[0] for p in plants)
+    total_max = sum(YIELD_RANGE.get(p.flowering_degree or "Medium", (30, 65))[1] for p in plants)
+    n = len(plants)
+    avg = (total_min + total_max) / 2
+    return {
+        "min_kg": round(total_min),
+        "max_kg": round(total_max),
+        "per_tree_avg_kg": round(avg / n, 1),
+    }
 
-    if is_area and area_data and "area_sq_yards" in area_data:
-        parts.append(
-            f"The selected area covers {area_data['area_sq_yards']:,.2f} sq yards "
-            f"({area_data['area_acres']:.4f} acres)."
+
+# =============================================================================
+# SINGLE GEMINI VISION + DB ANSWER  (1 API call, lowest latency)
+# =============================================================================
+
+def _gemini_vision_answer(
+    question: str,
+    cropped_b64: str,
+    area_data: Dict[str, Any],
+    db_plants: list,
+) -> tuple:
+    """
+    One Gemini call that simultaneously:
+      1. Counts tree canopies from the cropped polygon image (exact visual count)
+      2. Scales per-plant DB rates by that visual count (handles any region size)
+      3. Answers the farmer's question in pinpoint format
+
+    Returns (answer_str, sources_list)
+    """
+    # ── Build DB context from 2 stored fields: canopy_size, flowering_degree ──
+    n_db = len(db_plants)
+    if n_db > 0:
+        # Canopy counts and %
+        large_n  = sum(1 for p in db_plants if p.canopy_size == "Large")
+        medium_n = sum(1 for p in db_plants if p.canopy_size == "Medium")
+        small_n  = sum(1 for p in db_plants if p.canopy_size == "Small")
+        large_pct  = round(large_n  / n_db * 100)
+        medium_pct = round(medium_n / n_db * 100)
+        small_pct  = round(small_n  / n_db * 100)
+
+        # Flowering counts and %
+        fl_high = sum(1 for p in db_plants if p.flowering_degree == "High")
+        fl_med  = sum(1 for p in db_plants if p.flowering_degree == "Medium")
+        fl_low  = sum(1 for p in db_plants if p.flowering_degree == "Low")
+        fl_high_pct = round(fl_high / n_db * 100)
+        fl_med_pct  = round(fl_med  / n_db * 100)
+        fl_low_pct  = round(fl_low  / n_db * 100)
+
+        # Per-tree fertilizer (canopy-weighted benchmark)
+        FERT = {"Large": (2.2, 0.9, 1.3, 32), "Medium": (1.8, 0.7, 1.0, 25), "Small": (1.2, 0.5, 0.7, 18)}
+        urea_per   = round((large_n*FERT["Large"][0] + medium_n*FERT["Medium"][0] + small_n*FERT["Small"][0]) / n_db, 2)
+        dap_per    = round((large_n*FERT["Large"][1] + medium_n*FERT["Medium"][1] + small_n*FERT["Small"][1]) / n_db, 2)
+        potash_per = round((large_n*FERT["Large"][2] + medium_n*FERT["Medium"][2] + small_n*FERT["Small"][2]) / n_db, 2)
+        manure_per = round((large_n*FERT["Large"][3] + medium_n*FERT["Medium"][3] + small_n*FERT["Small"][3]) / n_db, 1)
+
+        # Per-tree yield (flowering-based benchmark)
+        yd = calculate_yield_from_plants(db_plants)
+        yield_min_per = round(yd["min_kg"] / n_db, 1)
+        yield_max_per = round(yd["max_kg"] / n_db, 1)
+
+        db_context = (
+            f"FARM DATABASE ({n_db} sample plants near this region):\n"
+            f"  Canopy: {large_pct}% Large, {medium_pct}% Medium, {small_pct}% Small\n"
+            f"  Flowering: {fl_high_pct}% High, {fl_med_pct}% Medium, {fl_low_pct}% Low\n"
+            f"  Per-tree fertilizer (canopy-weighted): Urea {urea_per} kg, DAP {dap_per} kg, Potash {potash_per} kg, Manure {manure_per} kg\n"
+            f"  Per-tree yield (flowering-based): {yield_min_per}–{yield_max_per} kg/season\n"
+            f"  SCALE RULE: Multiply all per-tree values by N (your visual count from the image)"
         )
-
-    if is_count:
-        parts.append(
-            f"There are {count} mango trees — "
-            f"{cb['Large']} large, {cb['Medium']} medium, {cb['Small']} small."
+        sources = ["Gemini Vision", "Plant Database (PostgreSQL)"]
+    else:
+        db_context = (
+            "No database records for this region. Use standard mango orchard benchmarks:\n"
+            "  Canopy: ~30% Large, 50% Medium, 20% Small\n"
+            "  Flowering: ~35% High, 40% Medium, 25% Low\n"
+            "  Per-tree fertilizer: Urea 1.8 kg, DAP 0.7 kg, Potash 1.0 kg, Manure 25 kg\n"
+            "  Per-tree yield: 40–80 kg/season\n"
+            "  SCALE RULE: Multiply all per-tree values by N (your visual count from the image)"
         )
+        sources = ["Gemini Vision"]
 
-    if is_health and "health" in result["data"]:
-        h = result["data"]["health"]
-        si = h["metrics"].get("stress_indicators", {})
-        si_str = (", ".join(f"{k} ({v})" for k, v in si.items())) if si else "none"
-        parts.append(
-            f"Health: {h['status']} (avg score {h['health_score']}/100) — "
-            f"{h['metrics']['Healthy']} healthy, {h['metrics']['Moderate']} moderate, "
-            f"{h['metrics']['Stressed']} stressed. Stress indicators: {si_str}."
-        )
+    area_line = ""
+    if area_data:
+        area_line = f"AREA: {area_data.get('area_acres', 0):.2f} acres"
 
-    if is_fertilizer or is_manure:
-        f_ = result["data"]["fertilizer"]["fertilizers"]
-        parts.append(
-            f"Inputs for {count} trees: Urea {f_['urea_kg']} kg, "
-            f"DAP {f_['dap_kg']} kg, Potash {f_['potash_kg']} kg, Manure {f_['manure_kg']} kg."
-        )
+    # ── Build the strict system prompt ────────────────────────────────────────
+    system_prompt = """You are an expert aerial mango farm analyst for a live demo. Accuracy and precision are critical.
 
-    if is_phenology and "phenology" in result["data"]:
-        ph = result["data"]["phenology"]
-        parts.append(
-            f"Flowering: {ph['flowering']['High']} high, {ph['flowering']['Medium']} medium, "
-            f"{ph['flowering']['Low']} low. "
-            f"Fruiting: {ph['fruiting']['Mature']} mature, {ph['fruiting']['Developing']} developing, "
-            f"{ph['fruiting']['None']} none."
-        )
+You receive: (1) a cropped drone image — bright polygon = selected area, dark = excluded, (2) farm DB context.
 
-    if is_physical and "physical" in result["data"]:
-        ph = result["data"]["physical"]
-        parts.append(
-            f"Tree height: avg {ph['avg_height_m']}m (min {ph['min_height_m']}m, max {ph['max_height_m']}m). "
-            f"Age: avg {ph['avg_age_years']} yrs (min {ph['min_age_years']}, max {ph['max_age_years']})."
-        )
+━━━ STEP 1 — COUNT (non-negotiable) ━━━
+Look ONLY at the bright polygon region. Every distinct round/oval green canopy cluster = 1 mango tree.
+- Count each canopy individually, even if partially inside the boundary.
+- If only 1 tree is visible, count it as 1. Never say "approximately".
+- If nothing is visible in the bright region, count is 0.
 
-    if not parts:
-        parts.append(
-            f"Found {count} mango trees — "
-            f"{cb['Large']} large, {cb['Medium']} medium, {cb['Small']} small."
-        )
+━━━ STEP 2 — VISUALLY CLASSIFY (for canopy/flowering queries) ━━━
+For each tree you counted, assess directly from the image:
+  Canopy:    Large = wide spreading crown clearly larger than others
+             Medium = typical mature mango size
+             Small = noticeably compact, younger, or stunted
+  Flowering: High = visible bright/pale clusters or dense flowering patches on crown
+             Medium = few bright patches, mostly green
+             Low = fully green, no visible flowering
+Use the DB percentage distributions as a sanity reference.
+For ≤5 trees: rely more on your direct visual observation than the DB distribution.
 
-    result["answer"] = " ".join(parts)
+━━━ STEP 3 — COMPUTE ━━━
+  Fertilizer: per-tree rate × N
+  Yield: per-tree yield range × N
+  Area: already provided — just report it
 
-    return result
+━━━ STEP 4 — ANSWER ━━━
+Answer ONLY the exact question asked. Nothing more.
+
+ABSOLUTE RULES:
+  - EXACTLY ONE LINE. One sentence. Always. No exceptions.
+  - Combined queries (e.g. count + area): pack into one line, topics separated by a comma or dash.
+  - No greetings, no filler, no "I can see", no "based on", no markdown (**, ##, -, backticks)
+  - No restating the question
+  - Singular when N=1: "1 mango tree" never "1 mango trees"
+  - Round: kg to 2 decimals, acres to 2 decimals, counts whole numbers
+  - Out of scope (soil, disease, pest, irrigation, exact age): "Cannot determine [topic] from aerial imagery."
+
+ONE-LINE FORMATS — copy exactly:
+  Count:        "N mango trees in the selected area."
+  Area:         "X.XX acres."
+  Count+Area:   "N mango trees across X.XX acres."
+  Canopy:       "N large, M medium, S small canopy trees."
+  Flowering:    "N high, M medium, S low flowering trees."
+  Fruiting:     "~N trees fruiting or developing (high flowering), M with limited fruit this season."
+  Health:       "N trees highly active (high flowering), M moderate, S low activity."
+  Fertilizer:   "For N tree(s): Urea X.XX kg, DAP Y.YY kg, Potash Z.ZZ kg, Manure W.WW kg."
+  Yield:        "~X kg estimated yield this season (N trees × avg Y.YY kg/tree based on flowering)."
+  Combined:     "N trees, X.XX acres — Urea A kg, DAP B kg." (one line, comma/dash separated)
+  0 trees:      "No trees detected in the selected area."
+  Out of scope: "Cannot determine [topic] from aerial imagery."
+
+LANGUAGE: Always respond in English. Translation is handled separately."""
+
+    user_msg = f"""Question: {question}
+
+{area_line}
+
+{db_context}
+
+Count the trees in the bright polygon region of the image, visually classify their canopy and flowering where relevant, scale the per-tree rates by your count, and answer the question."""
+
+    # ── Single LLM call ───────────────────────────────────────────────────────
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=0.0,
+        google_api_key=GEMINI_API_KEY,
+    )
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=[
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cropped_b64}"}},
+            {"type": "text", "text": user_msg},
+        ]),
+    ])
+    answer = response.content.strip()
+    # Strip any markdown that slipped through
+    answer = re.sub(r'\*\*([^*]+)\*\*', r'\1', answer)
+    answer = re.sub(r'\*([^*]+)\*', r'\1', answer)
+    answer = re.sub(r'^#+\s+', '', answer, flags=re.MULTILINE)
+    answer = re.sub(r'^[-•]\s+', '', answer, flags=re.MULTILINE)
+
+    return answer, sources
 
 
 # =============================================================================
@@ -655,41 +785,54 @@ def run_drone_agent(
 ) -> Dict[str, Any]:
     """
     Main entry point for drone image analysis.
-    
-    Flow:
-    1. Execute CV/Math tools for calculations (pure, no LLM)
-    2. If use_llm=True and GEMINI_API_KEY available, format response naturally
-    3. Otherwise, return direct tool output
-    
-    Args:
-        question: User's question
-        image_b64: Base64 encoded image
-        points: List of [x, y] coordinates
-        telemetry: Drone telemetry data (includes focal_len from SRT)
-        use_llm: If True, use Gemini for natural language formatting.
-                 Default: True
-    
-    Returns:
-        Dict with answer string, sources (tools used), and data
+
+    Fast path (use_llm=True + Gemini available + image):
+      1. area — geodesic GPS math (no API, <5ms)
+      2. DB query — plants in polygon (no API, <50ms)
+      3. crop image — OpenCV polygon crop (no API, <30ms)
+      4. ONE Gemini call — counts from image + scales DB rates + answers question
+
+    Fallback (no LLM / no image):
+      Uses answer_query_from_db → answer_query_pure (OpenCV HSV)
     """
-    # Step 1: Try DB-backed answer first (if db session provided and enough points)
+    # Step 1: Area (pure math, always fast)
+    area_data = {}
+    if len(points) >= 3:
+        area_data = calculate_area_pure(points, telemetry)
+
+    # Step 2: DB query for per-plant agronomic rates
     db_plants = []
     if db is not None and len(points) >= 3:
         try:
             from app.agents.calc_tools import query_plants_in_polygon
             db_plants = query_plants_in_polygon(points, telemetry, db, gps_points=gps_points)
+            print(f"[run_drone_agent] DB: {len(db_plants)} nearby plants for rate context")
         except Exception as e:
-            print(f"[drone_agent] DB query failed, falling back to CV: {e}")
+            print(f"[run_drone_agent] DB query failed: {e}")
 
+    # Step 3: Fast path — single Gemini vision call
+    if use_llm and GEMINI_AVAILABLE and GEMINI_API_KEY and image_b64:
+        try:
+            cropped_b64 = crop_image_to_polygon(image_b64, points) or image_b64
+            answer, sources = _gemini_vision_answer(question, cropped_b64, area_data, db_plants)
+            print("[run_drone_agent] ✓ Single Gemini vision call completed")
+            return {
+                "answer": answer,
+                "sources": sources,
+                "tools_used": ["gemini_vision", "query_plants_db" if db_plants else "area_calculator"],
+                "data": {"area": area_data},
+                "llm_used": True,
+            }
+        except Exception as e:
+            print(f"[run_drone_agent] Gemini vision failed, falling back: {e}")
+
+    # Step 4: Fallback — pure CV / DB (no LLM)
+    print("[run_drone_agent] Using CV fallback (no LLM)")
     if db_plants:
         result = answer_query_from_db(question, db_plants, points, telemetry)
-        print(f"[run_drone_agent] DB path: {len(db_plants)} plants in polygon")
     else:
-        print(f"[run_drone_agent] No plants in polygon, using CV fallback")
         result = answer_query_pure(question, image_b64, points, telemetry)
-    
-    # Step 2: Format tools_used as human-readable sources
-    tools_used = result.get("tools_used", [])
+
     source_names = {
         "calculate_area": "Area Calculator",
         "count_plants": "Plant Detection (OpenCV)",
@@ -699,34 +842,13 @@ def run_drone_agent(
         "detect_type": "Plant Type Detection",
         "query_plants_db": "Plant Database (PostgreSQL)",
     }
-    sources = [source_names.get(tool, tool) for tool in tools_used]
-    
-    # Step 3: Use Gemini LLM for natural language formatting (if enabled)
-    final_answer = result["answer"]
-    llm_used = False
-    
-    if use_llm and GEMINI_AVAILABLE and GEMINI_API_KEY:
-        natural_response = format_response_with_gemini(
-            question,
-            result.get("data", {}),
-            tools_used
-        )
-        if natural_response:
-            final_answer = natural_response
-            llm_used = True
-            print("[run_drone_agent] ✓ Used Gemini LLM for natural language response")
-        else:
-            print("[run_drone_agent] ⚠ Gemini formatting failed, using direct output")
-    else:
-        if use_llm:
-            print("[run_drone_agent] ⚠ Gemini not available, using direct output")
-    
+    tools_used = result.get("tools_used", [])
     return {
-        "answer": final_answer,
-        "sources": sources,
+        "answer": result["answer"],
+        "sources": [source_names.get(t, t) for t in tools_used],
         "tools_used": tools_used,
         "data": result.get("data", {}),
-        "llm_used": llm_used
+        "llm_used": False,
     }
 
 
