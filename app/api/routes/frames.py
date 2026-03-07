@@ -35,8 +35,9 @@ class QueryRequest(BaseModel):
     frame_id: str
     points: list[list[float]]
     question: str
-    use_llm: bool = False
+    use_llm: bool = True
     lang: str = "en"  # Language code: en, hi, te
+    gps_points: list[list[float]] | None = None  # pre-computed [lat, lon] from frontend
 
 
 async def translate_text(text: str, target_lang: str, source_lang: str = "en") -> str:
@@ -186,7 +187,9 @@ async def query_frame(body: QueryRequest, db: Session = Depends(get_db)):
             image_b64=b64,
             points=body.points,
             telemetry=telem,
-            use_llm=body.use_llm
+            use_llm=body.use_llm,
+            db=db,
+            gps_points=body.gps_points,
         )
         answer = agent_result.get("answer", "")
         sources = agent_result.get("sources", [])
