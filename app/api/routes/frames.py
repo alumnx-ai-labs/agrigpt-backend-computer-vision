@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import cv2
 import numpy as np
+import httpx
 
 from app.core.database import get_db
 from app.core.srt_parser import get_closest_frame_by_timestamp, get_video_fps_from_db
@@ -17,7 +18,7 @@ from app.services.storage_service import StorageService
 from app.services.video_service import VideoService
 from app.agents.calc_tools import calculate_gsd
 from app.agents.drone_agent import run_drone_agent
-from app.config import DEFAULT_VIDEO_ID
+from app.config import DEFAULT_VIDEO_ID, SPEECH_SERVICE_URL
 
 router = APIRouter(prefix="/image-query", tags=["Frames"])
 
@@ -35,6 +36,34 @@ class QueryRequest(BaseModel):
     points: list[list[float]]
     question: str
     use_llm: bool = False
+    lang: str = "en"  # Language code: en, hi, te
+
+
+async def translate_text(text: str, target_lang: str, source_lang: str = "en") -> str:
+    """Call speech service to translate text between languages."""
+    if target_lang == source_lang:
+        return text
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{SPEECH_SERVICE_URL}/translate",
+                json={
+                    "text": text,
+                    "target_lang": target_lang,
+                    "source_lang": source_lang,
+                    "use_llm": True  # Use LLM for better agricultural terminology
+                }
+            )
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("translated_text", text)
+            else:
+                print(f"[translate] Speech service error: {response.status_code}")
+                return text
+    except Exception as e:
+        print(f"[translate] Error calling speech service: {e}")
+        return text
 
 
 @router.post("/capture")
@@ -113,11 +142,16 @@ def get_frame(frame_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/query")
-def query_frame(body: QueryRequest, db: Session = Depends(get_db)):
+async def query_frame(body: QueryRequest, db: Session = Depends(get_db)):
     """
     Annotate a frame with user points and return agricultural analysis.
 
     Uses PURE CV/MATH by default (no LLM needed, FREE & FAST).
+    
+    Supports multilingual queries:
+    - lang="en": Process directly, no translation needed
+    - lang="hi"/"te": Question is expected in English (frontend translates),
+                      response is translated back to user's language
     """
     entry = storage_service.get_frame_entry(body.frame_id, db)
     if not entry:
@@ -147,23 +181,36 @@ def query_frame(body: QueryRequest, db: Session = Depends(get_db)):
     telem = entry.get("telemetry") or {}
 
     try:
-        answer = run_drone_agent(
+        agent_result = run_drone_agent(
             question=body.question,
             image_b64=b64,
             points=body.points,
             telemetry=telem,
             use_llm=body.use_llm
         )
+        answer = agent_result.get("answer", "")
+        sources = agent_result.get("sources", [])
+        tools_used = agent_result.get("tools_used", [])
     except Exception as exc:
         print(f"[drone_agent] Error: {exc}")
         raise HTTPException(502, f"Drone Agent error: {exc}") from exc
+
+    # Translate response if language is not English
+    translated_answer = answer
+    if body.lang != "en" and answer:
+        translated_answer = await translate_text(answer, body.lang, "en")
+        print(f"[query] Translated response to {body.lang}")
 
     return {
         "frame_id": body.frame_id,
         "question": body.question,
         "points": body.points,
-        "answer": answer,
+        "answer": translated_answer,
+        "answer_original": answer if body.lang != "en" else None,
+        "sources": sources,
+        "tools_used": tools_used,
         "annotated_b64": b64,
         "telemetry": telem,
         "llm_used": body.use_llm,
+        "lang": body.lang,
     }
