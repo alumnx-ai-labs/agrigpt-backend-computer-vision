@@ -325,20 +325,53 @@ Remember: You're helping a farmer understand their drone analysis results. Be cl
         
         if "plant_count" in tool_data:
             pc = tool_data["plant_count"]
-            data_summary.append(f"PLANTS: {pc.get('count', 0)} detected, {pc.get('green_coverage_pct', 0)}% green coverage")
-        
-        if "fertilizer" in tool_data:
-            fert = tool_data["fertilizer"]
-            ferts = fert.get("fertilizers", {})
-            data_summary.append(f"FERTILIZER: Urea {ferts.get('urea_kg', 'N/A')} kg, DAP {ferts.get('dap_kg', 'N/A')} kg, Potash {ferts.get('potash_kg', 'N/A')} kg")
-        
-        if "manure" in tool_data:
-            man = tool_data["manure"]
-            data_summary.append(f"MANURE: {man.get('manure_kg', 'N/A')} kg ({man.get('manure_tonnes', 'N/A')} tonnes)")
-        
+            cb = pc.get("canopy_breakdown", {})
+            canopy_str = (
+                f" (Large: {cb.get('Large',0)}, Medium: {cb.get('Medium',0)}, Small: {cb.get('Small',0)})"
+                if cb else ""
+            )
+            data_summary.append(
+                f"PLANTS: {pc.get('count', 0)} total{canopy_str}, "
+                f"{pc.get('green_coverage_pct', 0)}% healthy"
+            )
+
         if "health" in tool_data:
             health = tool_data["health"]
-            data_summary.append(f"HEALTH: Score {health.get('health_score', 0)}/100, Status: {health.get('status', 'unknown')}")
+            m = health.get("metrics", {})
+            si = m.get("stress_indicators", {})
+            si_str = ", ".join(f"{k}:{v}" for k, v in si.items()) if si else "none"
+            data_summary.append(
+                f"HEALTH: Score {health.get('health_score', 0)}/100, Status: {health.get('status', 'unknown')}, "
+                f"Healthy:{m.get('Healthy',0)}, Moderate:{m.get('Moderate',0)}, Stressed:{m.get('Stressed',0)}, "
+                f"Stress indicators: {si_str}"
+            )
+
+        if "fertilizer" in tool_data:
+            ferts = tool_data["fertilizer"].get("fertilizers", {})
+            data_summary.append(
+                f"FERTILIZER: Urea {ferts.get('urea_kg','N/A')} kg, DAP {ferts.get('dap_kg','N/A')} kg, "
+                f"Potash {ferts.get('potash_kg','N/A')} kg, Manure {ferts.get('manure_kg','N/A')} kg"
+            )
+
+        if "phenology" in tool_data:
+            ph = tool_data["phenology"]
+            fl = ph.get("flowering", {})
+            fr = ph.get("fruiting", {})
+            data_summary.append(
+                f"FLOWERING: High:{fl.get('High',0)}, Medium:{fl.get('Medium',0)}, Low:{fl.get('Low',0)}"
+            )
+            data_summary.append(
+                f"FRUITING: Mature:{fr.get('Mature',0)}, Developing:{fr.get('Developing',0)}, None:{fr.get('None',0)}"
+            )
+
+        if "physical" in tool_data:
+            ph = tool_data["physical"]
+            data_summary.append(
+                f"HEIGHT: avg {ph.get('avg_height_m','N/A')}m (min {ph.get('min_height_m','N/A')}m, max {ph.get('max_height_m','N/A')}m)"
+            )
+            data_summary.append(
+                f"AGE: avg {ph.get('avg_age_years','N/A')} yrs (min {ph.get('min_age_years','N/A')}, max {ph.get('max_age_years','N/A')})"
+            )
         
         user_message = f"""User's Question: {question}
 
@@ -372,6 +405,225 @@ Please provide a clear, helpful response to the user's question based on this an
 
 
 # =============================================================================
+# DATABASE-BACKED QUERY ANSWERING
+# =============================================================================
+
+def answer_query_from_db(
+    question: str,
+    plants: list,
+    points: List[List[float]],
+    telemetry: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Answer agricultural queries using per-plant PostgreSQL data.
+
+    Question-aware: only computes and returns sections relevant to what
+    was asked. Supports English, Telugu, and Hindi keywords so the
+    plain-text fallback is also focused when Gemini is unavailable.
+    """
+    from app.agents.calc_tools import calculate_area_pure
+
+    q = question.lower()
+
+    # ── Multilingual keyword matching (en / te / hi) ──────────────────────────
+    is_area = any(kw in q for kw in [
+        "area", "square", "sqft", "acre", "cent", "how big", "how much land",
+        "ఏరియా", "విస్తీర్ణం", "ఎంత స్థలం", "ఎంత ఏరియా",
+        "क्षेत्र", "कितनी जमीन", "क्षेत्रफल",
+    ])
+    is_count = any(kw in q for kw in [
+        "how many", "count", "plant", "tree", "mango", "number of",
+        "small", "medium", "large", "canopy", "size", "breakdown", "type",
+        "ఎన్ని", "మొక్క", "చెట్టు", "మొక్కలు", "ఎంత మొక్కలు",
+        "कितने", "पौधे", "पेड़",
+    ])
+    is_health = any(kw in q for kw in [
+        "health", "condition", "status", "healthy", "sick", "stress", "disease",
+        "ఆరోగ్యం", "స్థితి", "ఆరోగ్య స్థితి",
+        "स्वास्थ्य", "स्थिति", "बीमार",
+    ])
+    is_fertilizer = any(kw in q for kw in [
+        "fertilizer", "urea", "dap", "npk", "nutrient",
+        "ఎరువు", "యూరియా", "ఎరువులు",
+        "खाद", "उर्वरक", "यूरिया",
+    ])
+    is_manure = any(kw in q for kw in [
+        "manure", "compost", "organic",
+        "పశువుల ఎరువు", "కంపోస్ట్",
+        "गोबर", "जैविक",
+    ])
+
+    # General query — show everything
+    general = not any([is_area, is_count, is_health, is_fertilizer, is_manure])
+    if general:
+        is_area = len(points) >= 3
+        is_count = True
+        is_health = True
+
+    result = {
+        "question": question,
+        "answer": "",
+        "tools_used": ["query_plants_db"],
+        "llm_used": False,
+        "data": {},
+    }
+
+    count = len(plants)
+    area_data = {}
+
+    # ── Always compute ALL aggregations so Gemini has full context ────────────
+
+    # Area
+    if len(points) >= 3:
+        area_data = calculate_area_pure(points, telemetry)
+        result["data"]["area"] = area_data
+
+    # Plant count + canopy breakdown
+    small_n  = sum(1 for p in plants if p.canopy_size == "Small")
+    medium_n = sum(1 for p in plants if p.canopy_size == "Medium")
+    large_n  = sum(1 for p in plants if p.canopy_size == "Large")
+    result["data"]["plant_count"] = {
+        "count": count,
+        "canopy_breakdown": {"Small": small_n, "Medium": medium_n, "Large": large_n},
+        "green_coverage_pct": round(
+            sum(1 for p in plants if p.health_status == "Healthy") / max(count, 1) * 100, 1
+        ),
+    }
+
+    # Health aggregation
+    if count > 0:
+        avg_score  = round(sum(p.health_score or 0 for p in plants) / count)
+        healthy_n  = sum(1 for p in plants if p.health_status == "Healthy")
+        moderate_n = sum(1 for p in plants if p.health_status == "Moderate")
+        stressed_n = sum(1 for p in plants if p.health_status == "Stressed")
+        dominant   = max(
+            [("Healthy", healthy_n), ("Moderate", moderate_n), ("Stressed", stressed_n)],
+            key=lambda x: x[1]
+        )[0]
+        # Collect all unique stress indicators
+        all_stress = []
+        for p in plants:
+            if p.stress_indicators:
+                all_stress.extend(p.stress_indicators)
+        stress_summary = {s: all_stress.count(s) for s in set(all_stress)}
+
+        result["data"]["health"] = {
+            "health_score": avg_score,
+            "status": dominant,
+            "metrics": {
+                "Healthy": healthy_n,
+                "Moderate": moderate_n,
+                "Stressed": stressed_n,
+                "stress_level_none":   sum(1 for p in plants if p.stress_level == "None"),
+                "stress_level_low":    sum(1 for p in plants if p.stress_level == "Low"),
+                "stress_level_medium": sum(1 for p in plants if p.stress_level == "Medium"),
+                "stress_level_high":   sum(1 for p in plants if p.stress_level == "High"),
+                "stress_indicators": stress_summary,
+                "green_coverage_pct": round(healthy_n / max(count, 1) * 100, 1),
+                "stress_indicators_pct": round(stressed_n / max(count, 1) * 100, 1),
+            },
+            "recommendation": (
+                "Plants are mostly healthy. Routine monitoring recommended."
+                if dominant == "Healthy"
+                else "Several plants show stress. Check irrigation and soil nutrients."
+                if dominant == "Moderate"
+                else "High stress detected. Immediate inspection recommended."
+            ),
+        }
+
+        # Fertilizer / manure aggregation
+        result["data"]["fertilizer"] = {
+            "fertilizers": {
+                "urea_kg":   round(sum(p.urea_needed_kg   or 0 for p in plants), 2),
+                "dap_kg":    round(sum(p.dap_needed_kg    or 0 for p in plants), 2),
+                "potash_kg": round(sum(p.potash_needed_kg or 0 for p in plants), 2),
+                "manure_kg": round(sum(p.manure_needed_kg or 0 for p in plants), 2),
+            },
+            "plant_count": count,
+            "note": f"Summed per-plant recommendations for {count} mango trees",
+        }
+
+        # Phenology (flowering + fruiting)
+        result["data"]["phenology"] = {
+            "flowering": {
+                "Low":    sum(1 for p in plants if p.flowering_degree == "Low"),
+                "Medium": sum(1 for p in plants if p.flowering_degree == "Medium"),
+                "High":   sum(1 for p in plants if p.flowering_degree == "High"),
+            },
+            "fruiting": {
+                "None":       sum(1 for p in plants if p.fruiting_status == "None"),
+                "Developing": sum(1 for p in plants if p.fruiting_status == "Developing"),
+                "Mature":     sum(1 for p in plants if p.fruiting_status == "Mature"),
+            },
+        }
+
+        # Physical stats (height + age)
+        heights = [p.height_estimate_m for p in plants if p.height_estimate_m]
+        ages    = [p.age_years for p in plants if p.age_years]
+        result["data"]["physical"] = {
+            "avg_height_m": round(sum(heights) / len(heights), 1) if heights else None,
+            "min_height_m": round(min(heights), 1) if heights else None,
+            "max_height_m": round(max(heights), 1) if heights else None,
+            "avg_age_years": round(sum(ages) / len(ages), 1) if ages else None,
+            "min_age_years": min(ages) if ages else None,
+            "max_age_years": max(ages) if ages else None,
+        }
+
+    # ── Plain-text fallback (used only if Gemini is unavailable) ─────────────
+    # Build answer by concatenating all relevant topics (supports combined queries)
+    parts = []
+    cb = result["data"]["plant_count"]["canopy_breakdown"]
+
+    if is_area and area_data and "area_sq_yards" in area_data:
+        parts.append(
+            f"The selected area covers {area_data['area_sq_yards']:,.2f} sq yards "
+            f"({area_data['area_acres']:.4f} acres)."
+        )
+
+    if is_count:
+        parts.append(
+            f"There are {count} mango trees — "
+            f"{cb['Large']} large, {cb['Medium']} medium, {cb['Small']} small."
+        )
+
+    if is_health and "health" in result["data"]:
+        h = result["data"]["health"]
+        si = h["metrics"].get("stress_indicators", {})
+        si_str = (", ".join(f"{k} ({v})" for k, v in si.items())) if si else "none"
+        parts.append(
+            f"Health: {h['status']} (avg score {h['health_score']}/100) — "
+            f"{h['metrics']['Healthy']} healthy, {h['metrics']['Moderate']} moderate, "
+            f"{h['metrics']['Stressed']} stressed. Stress indicators: {si_str}."
+        )
+
+    if is_fertilizer or is_manure:
+        f_ = result["data"]["fertilizer"]["fertilizers"]
+        parts.append(
+            f"Inputs for {count} trees: Urea {f_['urea_kg']} kg, "
+            f"DAP {f_['dap_kg']} kg, Potash {f_['potash_kg']} kg, Manure {f_['manure_kg']} kg."
+        )
+
+    if any(kw in q for kw in ["flower", "fruit", "bloom", "harvest"]):
+        ph = result["data"]["phenology"]
+        parts.append(
+            f"Flowering: {ph['flowering']['High']} high, {ph['flowering']['Medium']} medium, "
+            f"{ph['flowering']['Low']} low. "
+            f"Fruiting: {ph['fruiting']['Mature']} mature, {ph['fruiting']['Developing']} developing, "
+            f"{ph['fruiting']['None']} none."
+        )
+
+    if not parts:
+        parts.append(
+            f"Found {count} mango trees — "
+            f"{cb['Large']} large, {cb['Medium']} medium, {cb['Small']} small."
+        )
+
+    result["answer"] = " ".join(parts)
+
+    return result
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -380,7 +632,9 @@ def run_drone_agent(
     image_b64: str,
     points: List[List[float]],
     telemetry: Dict[str, Any],
-    use_llm: bool = True  # Now defaults to True for natural language
+    use_llm: bool = True,
+    db=None,
+    gps_points: Optional[List[List[float]]] = None,
 ) -> Dict[str, Any]:
     """
     Main entry point for drone image analysis.
@@ -401,8 +655,21 @@ def run_drone_agent(
     Returns:
         Dict with answer string, sources (tools used), and data
     """
-    # Step 1: Execute CV/Math tools (always pure, no LLM needed)
-    result = answer_query_pure(question, image_b64, points, telemetry)
+    # Step 1: Try DB-backed answer first (if db session provided and enough points)
+    db_plants = []
+    if db is not None and len(points) >= 3:
+        try:
+            from app.agents.calc_tools import query_plants_in_polygon
+            db_plants = query_plants_in_polygon(points, telemetry, db, gps_points=gps_points)
+        except Exception as e:
+            print(f"[drone_agent] DB query failed, falling back to CV: {e}")
+
+    if db_plants:
+        result = answer_query_from_db(question, db_plants, points, telemetry)
+        print(f"[run_drone_agent] DB path: {len(db_plants)} plants in polygon")
+    else:
+        print(f"[run_drone_agent] No plants in polygon, using CV fallback")
+        result = answer_query_pure(question, image_b64, points, telemetry)
     
     # Step 2: Format tools_used as human-readable sources
     tools_used = result.get("tools_used", [])
@@ -412,7 +679,8 @@ def run_drone_agent(
         "calculate_fertilizer": "Fertilizer Estimator",
         "calculate_manure": "Manure Calculator",
         "assess_health": "Health Assessment (CV)",
-        "detect_type": "Plant Type Detection"
+        "detect_type": "Plant Type Detection",
+        "query_plants_db": "Plant Database (PostgreSQL)",
     }
     sources = [source_names.get(tool, tool) for tool in tools_used]
     

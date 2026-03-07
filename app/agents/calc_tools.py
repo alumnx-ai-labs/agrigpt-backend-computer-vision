@@ -319,5 +319,57 @@ def calculate_manure_pure(
         })
     else:
         result["error"] = "Need either plant_count or area_m2"
-    
+
     return result
+
+
+# =============================================================================
+# DATABASE PLANT QUERY
+# =============================================================================
+
+def query_plants_in_polygon(pixel_points, telemetry, db, gps_points=None):
+    """
+    Query Plant rows whose GPS coordinates fall inside the marker polygon.
+
+    If gps_points [[lat,lon], ...] are provided (pre-computed by frontend),
+    use them directly — avoids backend pixel→GPS recomputation drift.
+    Otherwise falls back to computing GPS from pixel coords + telemetry.
+    """
+    from app.core.models import Plant
+
+    if gps_points and len(gps_points) >= 3:
+        # Use GPS coords sent directly from the frontend (most accurate)
+        gps_pts = [(p[0], p[1]) for p in gps_points]
+        print(f"[polygon] using frontend GPS points: {gps_pts}")
+    else:
+        # Compute GPS from pixel coords + telemetry
+        from app.utils.geo_utils import pixel_to_gps
+        gsd  = calculate_gsd(telemetry.get("rel_alt_m", 100))
+        clat = telemetry.get("lat", 17.568)
+        clon = telemetry.get("lon", 78.971)
+        gps_pts = [
+            pixel_to_gps(px, py, IMAGE_WIDTH_PX, IMAGE_HEIGHT_PX, gsd, clat, clon)
+            for px, py in pixel_points
+        ]
+        print(f"[polygon] computed GPS from pixels: center=({clat:.6f},{clon:.6f}) gsd={gsd:.4f}")
+
+    min_lat = min(p[0] for p in gps_pts)
+    max_lat = max(p[0] for p in gps_pts)
+    min_lon = min(p[1] for p in gps_pts)
+    max_lon = max(p[1] for p in gps_pts)
+    print(f"[polygon] bbox: lat {min_lat:.6f}–{max_lat:.6f}, lon {min_lon:.6f}–{max_lon:.6f}")
+
+    candidates = db.query(Plant).filter(
+        Plant.latitude.between(min_lat, max_lat),
+        Plant.longitude.between(min_lon, max_lon),
+    ).all()
+    print(f"[polygon] bbox candidates: {len(candidates)}")
+
+    try:
+        from shapely.geometry import Point, Polygon
+        polygon = Polygon([(lon, lat) for lat, lon in gps_pts])
+        result = [p for p in candidates if polygon.contains(Point(p.longitude, p.latitude))]
+        print(f"[polygon] after shapely filter: {len(result)}")
+        return result
+    except ImportError:
+        return candidates
