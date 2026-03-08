@@ -283,7 +283,7 @@ def format_response_with_gemini(
     
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             temperature=0.0,
             google_api_key=GEMINI_API_KEY,
         )
@@ -552,7 +552,7 @@ def count_plants_with_vision(image_b64: str, points: List[List[float]]) -> Optio
         img_b64 = cropped_b64 if cropped_b64 else image_b64
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             temperature=0.0,
             google_api_key=GEMINI_API_KEY,
         )
@@ -705,6 +705,7 @@ For each tree you counted, assess directly from the image:
              Low = fully green, no visible flowering
 Use the DB percentage distributions as a sanity reference.
 For ≤5 trees: rely more on your direct visual observation than the DB distribution.
+CRITICAL: large + medium + small MUST sum to exactly N (your visual count). Redistribute if needed.
 
 ━━━ STEP 3 — COMPUTE ━━━
   Fertilizer: per-tree rate × N
@@ -749,7 +750,7 @@ Count the trees in the bright polygon region of the image, visually classify the
 
     # ── Single LLM call ───────────────────────────────────────────────────────
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-2.0-flash",
         temperature=0.0,
         google_api_key=GEMINI_API_KEY,
     )
@@ -826,26 +827,27 @@ def run_drone_agent(
         except Exception as e:
             print(f"[run_drone_agent] Gemini vision failed, falling back: {e}")
 
-    # Step 4: Fallback — pure CV / DB (no LLM)
-    print("[run_drone_agent] Using CV fallback (no LLM)")
+    # Step 4: Fallback — DB or clean area-only (no verbose OpenCV HSV path)
+    print("[run_drone_agent] Using DB/area fallback (no LLM)")
     if db_plants:
         result = answer_query_from_db(question, db_plants, points, telemetry)
+        sources = ["Plant Database (PostgreSQL)"]
     else:
-        result = answer_query_pure(question, image_b64, points, telemetry)
+        # Clean area-only fallback — avoids verbose multi-line OpenCV output
+        q = question.lower()
+        if area_data and any(kw in q for kw in ["area", "how big", "acre", "size", "cent"]):
+            ans = f"{area_data.get('area_acres', 0):.2f} acres."
+        elif area_data:
+            ans = f"Selected area: {area_data.get('area_acres', 0):.2f} acres. Tree count and agronomic data unavailable (analysis service busy — please retry)."
+        else:
+            ans = "Analysis unavailable — please retry in a moment."
+        result = {"answer": ans, "tools_used": ["area_calculator"], "data": {"area": area_data}}
+        sources = ["Area Calculator"]
 
-    source_names = {
-        "calculate_area": "Area Calculator",
-        "count_plants": "Plant Detection (OpenCV)",
-        "calculate_fertilizer": "Fertilizer Estimator",
-        "calculate_manure": "Manure Calculator",
-        "assess_health": "Health Assessment (CV)",
-        "detect_type": "Plant Type Detection",
-        "query_plants_db": "Plant Database (PostgreSQL)",
-    }
     tools_used = result.get("tools_used", [])
     return {
         "answer": result["answer"],
-        "sources": [source_names.get(t, t) for t in tools_used],
+        "sources": sources,
         "tools_used": tools_used,
         "data": result.get("data", {}),
         "llm_used": False,
