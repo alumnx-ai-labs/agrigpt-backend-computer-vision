@@ -283,7 +283,7 @@ def format_response_with_gemini(
     
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             temperature=0.0,
             google_api_key=GEMINI_API_KEY,
         )
@@ -552,7 +552,7 @@ def count_plants_with_vision(image_b64: str, points: List[List[float]]) -> Optio
         img_b64 = cropped_b64 if cropped_b64 else image_b64
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             temperature=0.0,
             google_api_key=GEMINI_API_KEY,
         )
@@ -750,7 +750,7 @@ Count the trees in the bright polygon region of the image, visually classify the
 
     # ── Single LLM call ───────────────────────────────────────────────────────
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         temperature=0.0,
         google_api_key=GEMINI_API_KEY,
     )
